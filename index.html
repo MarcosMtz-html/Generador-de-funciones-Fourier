@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Generador de funciones · Fourier</title>
+<style>
+:root{--bg:#232d38;--card:#2d3743;--ink:#e8edf2;--mut:#93a1b0;--acc:#d48f43;--line:#b9c8dc;--grid:#3d4958;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#eef2f6;--card:#fff;--ink:#1c2630;--mut:#5d6b7a;--acc:#b86f1e;--line:#2b5c8f;--grid:#d3dbe4}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:760px;margin-inline:auto}
+h1{font-size:1.25rem;text-align:center;margin:4px 0 14px;font-weight:500}
+.card{background:var(--card);border-radius:22px;padding:16px 18px;margin-bottom:12px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.hz small{color:var(--mut);display:block;font-size:.8rem}
+.hz input{background:none;border:0;color:var(--ink);font-size:2rem;width:5.2ch;padding:0;font-family:inherit}
+.grow{flex:1}
+select{background:var(--bg);color:var(--ink);border:0;border-radius:10px;padding:8px;font-size:.9rem}
+.play{width:56px;height:56px;border-radius:50%;border:0;background:#3a4756;color:var(--ink);font-size:1.4rem;cursor:pointer}
+.play.on{background:var(--acc);color:#1b1b1b}
+.step{background:none;border:0;color:var(--ink);font-size:1.6rem;width:36px;cursor:pointer}
+input[type=range]{flex:1;accent-color:var(--acc);min-width:120px}
+.btns{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 12px}
+.big{border:0;border-radius:16px;padding:14px 22px;font-size:1rem;cursor:pointer;background:var(--acc);color:#1b1b1b;font-weight:600}
+.ghost{background:var(--card);color:var(--ink)}
+canvas{width:100%;height:auto;display:block;background:var(--bg);border-radius:12px}
+h2{font-size:.95rem;font-weight:500;margin:0 0 8px;color:var(--mut)}
+.eq{font-family:Georgia,serif;font-size:.95rem;margin:8px 0 0;color:var(--mut)}
+</style>
+</head>
+<body>
+<h1>Multi-osciladores · Fourier</h1>
+<div id="osc"></div>
+<div class="btns">
+  <button class="big" id="all">▶ Play All</button>
+  <button class="big ghost" id="add">＋ Añadir oscilador</button>
+</div>
+
+<div class="card">
+  <h2>Osciloscopio (señal total)</h2>
+  <canvas id="scope" width="900" height="340"></canvas>
+  <div class="row" style="margin-top:8px"><span>Ventana</span><input id="zoom" type="range" min="2" max="500" value="12"><span id="zv">12 ms</span></div>
+</div>
+
+<div class="card">
+  <h2>Espectro FFT (frecuencia en Hz)</h2>
+  <canvas id="spec" width="900" height="400"></canvas>
+  <div class="row" style="margin-top:8px"><span>Rango</span><input id="sr" type="range" min="200" max="3000" step="100" value="1000"><span id="srv">0–1000 Hz</span></div>
+</div>
+
+<div class="card">
+  <h2>Reconstrucción con N términos (T = 1 s, A = 1)</h2>
+  <select id="rsel" style="margin-bottom:8px"><option value="fourier">Rampa f(t)=A·t (pizarrón)</option><option value="f_sq">Cuadrada</option><option value="f_saw">Diente de sierra</option><option value="f_tri">Triangular</option></select>
+  <canvas id="rec" width="900" height="340"></canvas>
+  <div class="row" style="margin-top:8px"><span>Términos N</span><input id="nn" type="range" min="1" max="50" value="4"><b id="nv">4</b></div>
+  <p class="eq">Rampa: f(t) ≈ A/2 − (A/π) · Σ sin(2πnt)/n &nbsp;·&nbsp; a₀ = A/2, aₙ = 0, bₙ = −A/(nπ)</p>
+  <p class="eq">Elige en un oscilador la forma «(N términos)» de la onda para escucharla y ver su espectro FFT con N términos.</p>
+</div>
+
+<script>
+const AC = window.AudioContext || window.webkitAudioContext;
+let ctx, master, anScope, anSpec;
+const oscs = [];
+let N = 4;
+const TYPES = [["sine","Seno"],["square","Cuadrada"],["triangle","Triangular"],["sawtooth","Diente de sierra"],["fourier","Fourier rampa f(t)=A·t (N términos)"],["f_sq","Cuadrada (N términos)"],["f_saw","Diente de sierra (N términos)"],["f_tri","Triangular (N términos)"]];
+
+function initAudio(){
+  if(ctx) return;
+  ctx = new AC();
+  master = ctx.createGain(); master.gain.value = 0.25;
+  anScope = ctx.createAnalyser(); anScope.fftSize = 32768;
+  anSpec = ctx.createAnalyser(); anSpec.fftSize = 32768; anSpec.smoothingTimeConstant = 0.6;
+  master.connect(anScope); master.connect(anSpec); master.connect(ctx.destination);
+}
+function coef(type,k){
+  const P=Math.PI;
+  if(type==="f_sq"){const n=2*k-1;return [n,4/(P*n)];}
+  if(type==="f_saw")return [k,2*(k%2?1:-1)/(P*k)];
+  if(type==="f_tri"){const n=2*k-1;return [n,8*(k%2?1:-1)/(P*P*n*n)];}
+  return [k,-1/(P*k)];
+}
+function wave(type){
+  const M=coef(type,N)[0]+1, real=new Float32Array(M), imag=new Float32Array(M);
+  for(let k=1;k<=N;k++){const [n,b]=coef(type,k);imag[n]=b;}
+  return ctx.createPeriodicWave(real, imag);
+}
+function start(o){
+  initAudio(); if(ctx.state==="suspended") ctx.resume();
+  if(o.playing) return;
+  o.node = ctx.createOscillator(); o.g = ctx.createGain();
+  o.g.gain.setValueAtTime(0, ctx.currentTime);
+  o.g.gain.linearRampToValueAtTime(0.5, ctx.currentTime+0.03);
+  applyType(o); o.node.frequency.value = o.f;
+  o.node.connect(o.g); o.g.connect(master); o.node.start();
+  o.playing = true; o.btn.classList.add("on"); o.btn.textContent = "❚❚";
+}
+function stop(o){
+  if(!o.playing) return;
+  const t = ctx.currentTime, n = o.node, g = o.g;
+  g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t);
+  g.gain.linearRampToValueAtTime(0, t+0.03); n.stop(t+0.04);
+  o.playing = false; o.btn.classList.remove("on"); o.btn.textContent = "▶";
+}
+function applyType(o){
+  if(!o.node) return;
+  if(o.type[0]==="f") o.node.setPeriodicWave(wave(o.type)); else o.node.type = o.type;
+}
+function setF(o,v){
+  o.f = Math.min(2000, Math.max(20, Math.round(v)));
+  o.inp.value = o.f; o.sl.value = o.f;
+  if(o.node) o.node.frequency.setValueAtTime(o.f, ctx.currentTime);
+}
+function addOsc(f){
+  const o = {f, type:"sine", playing:false};
+  const el = document.createElement("div"); el.className = "card";
+  el.innerHTML = `<div class="row"><div class="hz"><small>Hz</small><input type="number" min="20" max="2000"></div><span class="grow"></span><select></select><button class="play">▶</button></div>
+  <div class="row" style="margin-top:10px"><button class="step">−</button><input type="range" min="20" max="2000"><button class="step">+</button></div>`;
+  o.inp = el.querySelector("input[type=number]"); o.sl = el.querySelector("input[type=range]");
+  o.btn = el.querySelector(".play"); const sel = el.querySelector("select");
+  sel.innerHTML = TYPES.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join("");
+  const [m,p] = el.querySelectorAll(".step");
+  o.inp.onchange = ()=>setF(o,+o.inp.value); o.sl.oninput = ()=>setF(o,+o.sl.value);
+  m.onclick = ()=>setF(o,o.f-1); p.onclick = ()=>setF(o,o.f+1);
+  sel.onchange = ()=>{o.type = sel.value; applyType(o);};
+  o.btn.onclick = ()=>o.playing ? stop(o) : start(o);
+  oscs.push(o); document.getElementById("osc").appendChild(el); setF(o,f);
+}
+[350,440,445].forEach(addOsc);
+document.getElementById("add").onclick = ()=>{ if(oscs.length<6) addOsc(220*(oscs.length)); };
+document.getElementById("all").onclick = ()=>{
+  const anyOff = oscs.some(o=>!o.playing);
+  oscs.forEach(o=> anyOff ? start(o) : stop(o));
+  document.getElementById("all").textContent = anyOff ? "❚❚ Stop All" : "▶ Play All";
+};
+document.getElementById("zoom").oninput = e=>document.getElementById("zv").textContent = e.target.value+" ms";
+document.getElementById("nn").oninput = e=>{
+  N = +e.target.value; document.getElementById("nv").textContent = N;
+  if(ctx) oscs.forEach(o=>{ if(o.type[0]==="f") applyType(o); });
+  drawRec();
+};
+
+const css = n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function grid(c,w,h){
+  c.strokeStyle = css("--grid"); c.lineWidth = 1; c.beginPath();
+  for(let i=1;i<10;i++){c.moveTo(i*w/10,0);c.lineTo(i*w/10,h);}
+  for(let j=1;j<4;j++){c.moveTo(0,j*h/4);c.lineTo(w,j*h/4);}
+  c.stroke();
+}
+function drawScope(){
+  const cv = document.getElementById("scope"), c = cv.getContext("2d"), w = cv.width, h = cv.height;
+  c.clearRect(0,0,w,h); grid(c,w,h);
+  if(!ctx) return;
+  const buf = new Float32Array(anScope.fftSize); anScope.getFloatTimeDomainData(buf);
+  const ms = +document.getElementById("zoom").value;
+  const n = Math.min(buf.length-1, Math.floor(ms/1000*ctx.sampleRate));
+  let s = 1; while(s < buf.length-n-1 && !(buf[s-1]<0 && buf[s]>=0)) s++;
+  if(s >= buf.length-n-1) s = 0;
+  c.strokeStyle = css("--line"); c.lineWidth = 2.5; c.beginPath();
+  for(let k=0;k<n;k++){
+    const x = k/n*w, y = h/2 - buf[s+k]*h*0.9;
+    k ? c.lineTo(x,y) : c.moveTo(x,y);
+  }
+  c.stroke();
+}
+function drawSpec(){
+  const cv=document.getElementById("spec"), c=cv.getContext("2d"), w=cv.width, h=cv.height;
+  const R=+document.getElementById("sr").value, L=24, B=h-50, T=40, W=w-2*L;
+  document.getElementById("srv").textContent="0–"+R+" Hz";
+  c.clearRect(0,0,w,h);
+  const step=R<=400?50:R<=800?100:R<=1600?200:500;
+  c.strokeStyle=css("--grid"); c.fillStyle=css("--mut"); c.lineWidth=1; c.font="24px system-ui"; c.textAlign="center";
+  c.beginPath();
+  for(let f=0;f<=R;f+=step){const x=L+f/R*W; c.moveTo(x,T-10); c.lineTo(x,B);}
+  for(let j=0;j<=4;j++){const y=B-j*(B-T)/4; c.moveTo(L,y); c.lineTo(w-L,y);}
+  c.stroke();
+  for(let f=0;f<=R;f+=step) c.fillText(f,L+f/R*W,B+30);
+  c.textAlign="right"; c.fillText("Hz",w-4,h-6); c.textAlign="center";
+  if(!ctx){c.fillText("Pulsa play para ver el espectro",w/2,h/2);return;}
+  const d=new Uint8Array(anSpec.frequencyBinCount); anSpec.getByteFrequencyData(d);
+  const bh=ctx.sampleRate/anSpec.fftSize, bins=Math.floor(R/bh);
+  c.strokeStyle=css("--acc"); c.lineWidth=3; c.beginPath();
+  for(let i=0;i<=bins;i++){const x=L+i/bins*W,y=B-d[i]/255*(B-T); i?c.lineTo(x,y):c.moveTo(x,y);}
+  c.stroke();
+  c.fillStyle=css("--ink"); c.font="bold 24px system-ui"; let lastX=-999;
+  for(let i=2;i<bins-1;i++){
+    if(d[i]>70&&d[i]>=d[i-1]&&d[i]>d[i+1]&&d[i]>=d[i-2]&&d[i]>=d[i+2]){
+      const den=d[i-1]-2*d[i]+d[i+1], dl=den?0.5*(d[i-1]-d[i+1])/den:0;
+      const f=(i+dl)*bh, x=L+f/R*W, y=B-d[i]/255*(B-T);
+      if(x-lastX>90){c.fillText(Math.round(f)+" Hz",Math.min(w-50,Math.max(50,x)),Math.max(26,y-10)); lastX=x;}
+    }
+  }
+}
+const IDEAL={
+  fourier:[t=>t-Math.floor(t),0.5,-0.2,1.2],
+  f_sq:[t=>Math.sign(Math.sin(2*Math.PI*t)),0,-1.4,1.4],
+  f_saw:[t=>2*(t-Math.floor(t+.5)),0,-1.4,1.4],
+  f_tri:[t=>{const u=t-.25;return 1-4*Math.abs(u-Math.floor(u+.5))},0,-1.4,1.4]
+};
+function drawRec(){
+  const ty=document.getElementById("rsel").value, [fi,dc,y0,y1]=IDEAL[ty];
+  const cv=document.getElementById("rec"), c=cv.getContext("2d"), w=cv.width, h=cv.height;
+  c.clearRect(0,0,w,h); grid(c,w,h);
+  const X=t=>t/2*w, Y=v=>h-(v-y0)/(y1-y0)*h;
+  c.strokeStyle=css("--mut"); c.setLineDash([8,6]); c.lineWidth=2; c.beginPath();
+  for(let k=0;k<=2000;k++){const t=k/1000,a=fi(t),b=fi(t+0.001);
+    if(k===0)c.moveTo(X(t),Y(a)); c.lineTo(X(t),Y(a));
+    if(Math.abs(a-b)>0.5)c.moveTo(X(t+0.001),Y(b));}
+  c.stroke(); c.setLineDash([]);
+  c.strokeStyle=css("--acc"); c.lineWidth=3; c.beginPath();
+  for(let k=0;k<=800;k++){
+    const t=k/400; let v=dc;
+    for(let j=1;j<=N;j++){const [n,b]=coef(ty,j); v+=b*Math.sin(2*Math.PI*n*t);}
+    k?c.lineTo(X(t),Y(v)):c.moveTo(X(t),Y(v));
+  }
+  c.stroke();
+}
+function loop(){ drawScope(); drawSpec(); requestAnimationFrame(loop); }
+document.getElementById("rsel").onchange=drawRec;
+drawRec(); loop();
+</script>
+</body>
+</html>
